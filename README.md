@@ -34,7 +34,28 @@ See the official [UniFi Protect integration documentation](https://www.home-assi
    - **Any ACTIVE registered UniFi Protect user**: every currently ACTIVE registered user recognized by a fingerprint event or owning the scanned NFC card can unlock. The allowlist does not restrict access in this mode.
 6. Optionally configure notifications, Activity logging, cooldown, and custom actions.
 
-To find ULP IDs, run **UniFi Protect: Get user keyring info** under **Settings → Tools → Actions**, selecting a device from the correct instance. Add the user's `ulp_id`, not their NFC ID, to Allowed users along with a friendly name.
+## View users, ACTIVE status and registered credentials
+
+In your own Home Assistant:
+
+1. Open **Settings → Tools → Actions**, or **Developer tools → Actions** if that is how your version labels the menu.
+2. Select **UniFi Protect: Get user keyring info** (`unifiprotect.get_user_keyring_info`).
+3. Switch to **UI mode**.
+4. In **UniFi Protect NVR**, select your doorbell or any device from the same Protect instance.
+5. Click **Perform action**.
+6. Read the **Response** below the action:
+   - `full_name`: the person's name.
+   - `user_status: ACTIVE`: the account status required by this blueprint.
+   - `ulp_id`: the user ID to copy into Allowed users.
+   - `keys`: registered credentials, identified by `key_type: fingerprint` or `key_type: nfc`. `keys: []` means no credentials are listed for that user.
+
+ACTIVE is a UniFi account status, not presence at home or a current login. An ACTIVE account alone does not unlock the door: a recognized fingerprint or registered NFC card is also required.
+
+With **Any ACTIVE registered UniFi Protect user**, leave Allowed users empty. Credentials belonging to currently ACTIVE users can unlock through the selected readers, including credentials registered later.
+
+With **Specific allowlisted users**, click **Add** and enter a friendly name and the person's `ulp_id` from the response. This grants access to all their registered credentials; the user must still be ACTIVE. Copy `ulp_id`, not `nfc_id` or `fingerprint_id`.
+
+If YAML mode reports that `device_id` is missing, switch to UI mode and select a device before performing the action.
 
 Example response:
 

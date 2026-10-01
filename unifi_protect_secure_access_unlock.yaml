@@ -5,7 +5,7 @@
 
 blueprint:
   name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.2
-  description: >
+  description: |
     v0.2: Unlock using optional/multiple fingerprint and NFC event entities
     from one UniFi Protect instance. Choose any ACTIVE registered user or
     specific allowlisted users. Both methods verify current ACTIVE user status
@@ -13,6 +13,41 @@ blueprint:
     Empty allowlists deny access under the specific-users policy.
     Includes reconnect/restoration guards, notifications, Activity logging,
     cooldown and custom success/denied actions.
+
+    ### View users, ACTIVE status and registered credentials
+
+    In your own Home Assistant:
+
+    1. Open **Settings → Tools → Actions**, or **Developer tools → Actions**
+       if that is how your version labels the menu.
+    2. Select **UniFi Protect: Get user keyring info**
+       (`unifiprotect.get_user_keyring_info`).
+    3. Switch to **UI mode** and select your doorbell or another device from
+       the same Protect instance in the **UniFi Protect NVR** field.
+    4. Click **Perform action**.
+    5. Read the **Response** below the action:
+       - `full_name`: the person's name.
+       - `user_status: ACTIVE`: the account status required by this blueprint.
+       - `ulp_id`: the user ID to copy into **Allowed users**.
+       - `keys`: registered credentials; `key_type: fingerprint` or
+         `key_type: nfc` identifies the method. `keys: []` means no credentials
+         are listed for that user.
+
+    ACTIVE is a UniFi account status; it does not indicate presence at home
+    or a current login. An ACTIVE account alone does not unlock the door:
+    a recognized fingerprint or registered NFC card is also required.
+
+    **Any ACTIVE registered UniFi Protect user:** leave Allowed users empty.
+    Credentials belonging to currently ACTIVE users can unlock through the
+    selected readers, including credentials registered later.
+
+    **Specific allowlisted users:** click Add under Allowed users and enter
+    a friendly name and the person's `ulp_id` from the response. Permission
+    applies to all their registered credentials, and they must still be ACTIVE.
+    Copy the user ID, not `nfc_id` or `fingerprint_id`.
+
+    If YAML mode reports that `device_id` is missing, switch to UI mode and
+    select a device before performing the action.
   domain: automation
   author: Teeseeone (based on the original epiech blueprint)
   source_url: https://github.com/Teeseeone/unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml
@@ -67,8 +102,10 @@ blueprint:
     access_policy:
       name: Access policy
       description: >
-        Both policies require a currently ACTIVE registered Protect user.
-        Specific users also requires their ULP ID in Allowed users.
+        Any ACTIVE registered user allows credentials belonging to all currently
+        ACTIVE users; Allowed users can be empty. Specific allowlisted users
+        additionally requires their ULP ID in Allowed users. See the steps above
+        to check user_status and registered credentials.
       default: specific_users
       selector:
         select:
@@ -82,7 +119,9 @@ blueprint:
       name: Allowed users
       description: >
         Used only with Specific allowlisted users. An empty list denies access.
-        Enter the person's friendly name and their UniFi ulp_id.
+        Enter the person's friendly name and their UniFi ulp_id. Find it using
+        Get user keyring info in Home Assistant Actions (see the steps above).
+        Copy ulp_id, not nfc_id or fingerprint_id.
         The same permission applies to that user's registered fingerprints
         and registered NFC cards.
       default: []
