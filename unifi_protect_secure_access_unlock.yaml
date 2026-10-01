@@ -4,20 +4,15 @@
 # Modifications Copyright (c) 2026 Teeseeone.
 
 blueprint:
-  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock
+  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.2
   description: >
-    Securely unlocks a Home Assistant lock using approved fingerprints or
-    registered NFC cards from a compatible UniFi Protect doorbell.
-
-    Fingerprints are authorized using the UniFi user's ulp_id.
-
-    NFC cards are verified against the current UniFi Protect user keyring.
-    The card must be registered in UniFi Protect, belong to an ACTIVE user,
-    and that user's ulp_id must be present in Allowed users.
-
-    Includes protection against restored/replayed events after Home Assistant
-    or UniFi Protect reconnects, optional notifications, Activity logging,
-    and custom success/denied actions.
+    v0.2: Unlock using optional/multiple fingerprint and NFC event entities
+    from one UniFi Protect instance. Choose any ACTIVE registered user or
+    specific allowlisted users. Both methods verify current ACTIVE user status
+    against the Protect keyring; NFC must match a currently registered card.
+    Empty allowlists deny access under the specific-users policy.
+    Includes reconnect/restoration guards, notifications, Activity logging,
+    cooldown and custom success/denied actions.
   domain: automation
   author: Teeseeone (based on the original epiech blueprint)
   source_url: https://github.com/Teeseeone/unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml
@@ -29,30 +24,34 @@ blueprint:
       name: UniFi Protect device
       description: >
         Select any device from the same UniFi Protect instance as the doorbell.
-        This is used to read the current user keyring for NFC validation.
+        This is used to read the current user keyring for both fingerprint and NFC validation.
       selector:
         device:
           filter:
             - integration: unifiprotect
 
     fingerprint_entity:
-      name: Fingerprint event entity
+      name: Fingerprint event entities (optional)
       description: >
-        The fingerprint event entity from the UniFi doorbell, for example
-        event.g4_doorbell_pro_fingerprint.
+        Select zero or more fingerprint event entities from the same Protect
+        instance. Leave empty to disable this method.
+      default: []
       selector:
         entity:
+          multiple: true
           filter:
             - domain: event
               integration: unifiprotect
 
     nfc_entity:
-      name: NFC event entity
+      name: NFC event entities (optional)
       description: >
-        The NFC event entity from the UniFi doorbell, for example
-        event.g4_doorbell_pro_nfc.
+        Select zero or more nfc event entities from the same Protect
+        instance. Leave empty to disable this method.
+      default: []
       selector:
         entity:
+          multiple: true
           filter:
             - domain: event
               integration: unifiprotect
@@ -65,10 +64,24 @@ blueprint:
           filter:
             - domain: lock
 
+    access_policy:
+      name: Access policy
+      description: >
+        Both policies require a currently ACTIVE registered Protect user.
+        Specific users also requires their ULP ID in Allowed users.
+      default: specific_users
+      selector:
+        select:
+          options:
+            - label: Any ACTIVE registered UniFi Protect user
+              value: any_active_user
+            - label: Specific allowlisted users
+              value: specific_users
+
     allowed_users:
       name: Allowed users
       description: >
-        Add each UniFi Protect user who is allowed to unlock the door.
+        Used only with Specific allowlisted users. An empty list denies access.
         Enter the person's friendly name and their UniFi ulp_id.
         The same permission applies to that user's registered fingerprints
         and registered NFC cards.
@@ -152,16 +165,12 @@ blueprint:
         action: {}
 
 triggers:
-  - trigger: event
-    event_type: state_changed
-    event_data:
-      entity_id: !input fingerprint_entity
+  - trigger: state
+    entity_id: !input fingerprint_entity
     id: fingerprint
 
-  - trigger: event
-    event_type: state_changed
-    event_data:
-      entity_id: !input nfc_entity
+  - trigger: state
+    entity_id: !input nfc_entity
     id: nfc
 
 conditions:
@@ -169,22 +178,24 @@ conditions:
   - condition: template
     value_template: >-
       {{
-        trigger.event.data.old_state is not none
-        and trigger.event.data.new_state is not none
-        and not trigger.event.data.old_state.attributes.get('restored', false)
-        and trigger.event.data.old_state.state != 'unavailable'
-        and trigger.event.data.new_state.state != 'unavailable'
+        trigger.from_state is not none
+        and trigger.to_state is not none
+        and not trigger.from_state.attributes.get('restored', false)
+        and not trigger.to_state.attributes.get('restored', false)
+        and trigger.from_state.state not in ['unknown', 'unavailable']
+        and trigger.to_state.state not in ['unknown', 'unavailable']
       }}
 
   # Require a genuinely new UniFi event ID.
   - condition: template
     value_template: >-
-      {% set old_id = trigger.event.data.old_state.attributes.get('event_id', '') %}
-      {% set new_id = trigger.event.data.new_state.attributes.get('event_id', '') %}
-      {{ new_id != '' and new_id != old_id }}
+      {% set old_id = trigger.from_state.attributes.get('event_id', '') %}
+      {% set new_id = trigger.to_state.attributes.get('event_id', '') %}
+      {{ new_id not in ['', none] and new_id != old_id }}
 
 actions:
   - variables:
+      policy: !input access_policy
       allowed_users_config: !input allowed_users
       notify_targets: !input notify_entities
       do_notify_success: !input notify_on_success
@@ -202,21 +213,21 @@ actions:
         {% endif %}
 
       access_event_type: >-
-        {{ trigger.event.data.new_state.attributes.get('event_type', '') }}
+        {{ trigger.to_state.attributes.get('event_type', '') }}
 
       access_event_id: >-
-        {{ trigger.event.data.new_state.attributes.get('event_id', '') }}
+        {{ trigger.to_state.attributes.get('event_id', '') }}
 
       fingerprint_ulp_id: >-
         {% if trigger.id == 'fingerprint' %}
-          {{ trigger.event.data.new_state.attributes.get('ulp_id', '') }}
+          {{ trigger.to_state.attributes.get('ulp_id', '') }}
         {% else %}
           {{ '' }}
         {% endif %}
 
       scanned_nfc_id: >-
         {% if trigger.id == 'nfc' %}
-          {{ trigger.event.data.new_state.attributes.get('nfc_id', '') }}
+          {{ trigger.to_state.attributes.get('nfc_id', '') }}
         {% else %}
           {{ '' }}
         {% endif %}
@@ -224,17 +235,16 @@ actions:
       keyring:
         users: []
 
-  # For NFC scans, fetch the current Protect keyring so only currently
-  # registered cards can authorize access.
+  # Read current registration/status for either valid credential event.
+  # A service failure stops the automation before lock.unlock (fail closed).
   - choose:
       - conditions:
           - condition: template
             value_template: >-
-              {{
-                trigger.id == 'nfc'
-                and access_event_type == 'scanned'
-                and scanned_nfc_id != ''
-              }}
+              {{ (trigger.id == 'fingerprint' and access_event_type == 'identified'
+                  and fingerprint_ulp_id not in ['', none])
+                 or (trigger.id == 'nfc' and access_event_type == 'scanned'
+                  and scanned_nfc_id not in ['', none]) }}
         sequence:
           - action: unifiprotect.get_user_keyring_info
             data:
@@ -242,121 +252,73 @@ actions:
             response_variable: keyring
 
   - variables:
-      nfc_user_ulp_id: >-
-        {% set ns = namespace(value='') %}
+      matched_users: >-
+        {% set ns = namespace(users=[]) %}
         {% for user in keyring.get('users', []) %}
-          {% for key in user.get('keys', []) %}
-            {% if key.get('key_type', '') == 'nfc'
-                  and key.get('nfc_id', '') == scanned_nfc_id %}
-              {% set ns.value = user.get('ulp_id', '') %}
-            {% endif %}
-          {% endfor %}
+          {% set match = namespace(found=false) %}
+          {% if trigger.id == 'fingerprint' and access_event_type == 'identified'
+                and fingerprint_ulp_id not in ['', none]
+                and user.get('ulp_id', '') == fingerprint_ulp_id %}
+            {% set match.found = true %}
+          {% elif trigger.id == 'nfc' and access_event_type == 'scanned'
+                and scanned_nfc_id not in ['', none] %}
+            {% for key in user.get('keys', []) %}
+              {% if key.get('key_type', '') == 'nfc'
+                    and key.get('nfc_id', '') == scanned_nfc_id %}
+                {% set match.found = true %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {% if match.found %}
+            {% set ns.users = ns.users + [user] %}
+          {% endif %}
         {% endfor %}
-        {{ ns.value }}
-
-      nfc_user_name: >-
-        {% set ns = namespace(value='') %}
-        {% for user in keyring.get('users', []) %}
-          {% for key in user.get('keys', []) %}
-            {% if key.get('key_type', '') == 'nfc'
-                  and key.get('nfc_id', '') == scanned_nfc_id %}
-              {% set ns.value = user.get('full_name', '') %}
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
-        {{ ns.value }}
-
-      nfc_user_status: >-
-        {% set ns = namespace(value='') %}
-        {% for user in keyring.get('users', []) %}
-          {% for key in user.get('keys', []) %}
-            {% if key.get('key_type', '') == 'nfc'
-                  and key.get('nfc_id', '') == scanned_nfc_id %}
-              {% set ns.value = user.get('user_status', '') %}
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
-        {{ ns.value }}
-
-  - variables:
-      access_ulp_id: >-
-        {% if trigger.id == 'fingerprint' %}
-          {{ fingerprint_ulp_id }}
-        {% elif trigger.id == 'nfc' %}
-          {{ nfc_user_ulp_id }}
-        {% else %}
-          {{ '' }}
-        {% endif %}
-
+        {{ ns.users }}
       allowed_ulp_ids: >-
         {{ allowed_users_config | map(attribute='ulp_id') | list }}
 
   - variables:
-      access_name: >-
-        {% set matches = allowed_users_config
-          | selectattr('ulp_id', 'equalto', access_ulp_id)
-          | list %}
-        {% if matches | count > 0 %}
-          {{ matches[0].name }}
-        {% elif trigger.id == 'nfc' and nfc_user_name != '' %}
-          {{ nfc_user_name }}
-        {% elif trigger.id == 'fingerprint' and access_event_type == 'not_identified' %}
-          Unknown fingerprint
-        {% elif trigger.id == 'nfc' %}
-          Unknown NFC card
-        {% else %}
-          Unknown user
-        {% endif %}
-
-      fingerprint_authorized: >-
-        {{
-          trigger.id == 'fingerprint'
-          and access_event_type == 'identified'
-          and access_ulp_id != ''
-          and access_ulp_id in allowed_ulp_ids
-        }}
-
-      nfc_registered: >-
-        {{
-          trigger.id == 'nfc'
-          and access_event_type == 'scanned'
-          and scanned_nfc_id != ''
-          and nfc_user_ulp_id != ''
-          and (nfc_user_status | upper) == 'ACTIVE'
-        }}
+      access_ulp_id: >-
+        {{ matched_users[0].get('ulp_id', '') if matched_users | count == 1 else '' }}
+      access_user_status: >-
+        {{ matched_users[0].get('user_status', '') if matched_users | count == 1 else '' }}
+      registered_name: >-
+        {{ matched_users[0].get('full_name', '') if matched_users | count == 1 else '' }}
 
   - variables:
-      nfc_authorized: >-
-        {{ nfc_registered and nfc_user_ulp_id in allowed_ulp_ids }}
-
-      access_authorized: >-
-        {{ fingerprint_authorized or nfc_authorized }}
-
-      denial_reason: >-
-        {% if trigger.id == 'fingerprint' %}
-          {% if access_event_type == 'not_identified' %}
-            Fingerprint was not recognized by UniFi Protect
-          {% elif fingerprint_ulp_id == '' %}
-            Fingerprint did not contain a UniFi user ID
-          {% elif fingerprint_ulp_id not in allowed_ulp_ids %}
-            Recognized fingerprint belongs to a user that is not allowed
-          {% else %}
-            Fingerprint authorization failed
-          {% endif %}
-        {% elif trigger.id == 'nfc' %}
-          {% if scanned_nfc_id == '' %}
-            NFC event did not contain a card ID
-          {% elif nfc_user_ulp_id == '' %}
-            NFC card is not registered in UniFi Protect
-          {% elif (nfc_user_status | upper) != 'ACTIVE' %}
-            NFC card belongs to an inactive UniFi Protect user
-          {% elif nfc_user_ulp_id not in allowed_ulp_ids %}
-            Registered NFC card belongs to a user that is not allowed
-          {% else %}
-            NFC authorization failed
-          {% endif %}
+      access_name: >-
+        {% set matches = allowed_users_config
+          | selectattr('ulp_id', 'equalto', access_ulp_id) | list %}
+        {% if matches | count > 0 %}
+          {{ matches[0].name }}
+        {% elif registered_name %}
+          {{ registered_name }}
         {% else %}
-          Unknown access method
+          Unknown {{ access_method }}
+        {% endif %}
+      access_authorized: >-
+        {{ matched_users | count == 1
+           and access_ulp_id not in ['', none]
+           and access_user_status == 'ACTIVE'
+           and (policy == 'any_active_user'
+                or (policy == 'specific_users' and access_ulp_id in allowed_ulp_ids)) }}
+      denial_reason: >-
+        {% if trigger.id == 'fingerprint' and access_event_type != 'identified' %}
+          Fingerprint was not recognized by UniFi Protect
+        {% elif trigger.id == 'nfc' and access_event_type != 'scanned' %}
+          Unexpected NFC event type
+        {% elif matched_users | count == 0 %}
+          Credential is not registered to a current UniFi Protect user
+        {% elif matched_users | count != 1 %}
+          Credential ownership is ambiguous
+        {% elif access_ulp_id in ['', none] %}
+          Registered user has no UniFi ULP ID
+        {% elif access_user_status != 'ACTIVE' %}
+          Credential belongs to an inactive UniFi Protect user
+        {% elif policy == 'specific_users' and access_ulp_id not in allowed_ulp_ids %}
+          Registered user is not allowlisted
+        {% else %}
+          Access policy did not authorize this user
         {% endif %}
 
   - choose:

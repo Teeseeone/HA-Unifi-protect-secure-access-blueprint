@@ -1,64 +1,42 @@
-# UniFi Protect Secure Access Blueprint
+# UniFi Protect Secure Access Blueprint v0.2
 
-A Home Assistant automation blueprint for securely unlocking a smart lock from a compatible UniFi Protect doorbell using **approved fingerprints** and **registered NFC cards**.
+A Home Assistant automation blueprint for unlocking a smart lock using registered fingerprints and NFC cards from compatible UniFi Protect doorbells.
 
 [![Import Blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FTeeseeone%2Funifi-protect-secure-access-blueprint%2Fblob%2Fmain%2Funifi_protect_secure_access_unlock.yaml)
 
-## What it does
+## What changed in v0.2
 
-- Whitelists fingerprint users by UniFi `ulp_id`.
-- Validates every NFC scan against the **current UniFi Protect user keyring**.
-- Requires an NFC card to be registered to an **ACTIVE** UniFi user whose `ulp_id` is allowed.
-- Rejects unknown/unregistered NFC cards.
-- Rejects restored/replayed events after Home Assistant or UniFi Protect reconnects.
-- Optionally logs access attempts, sends notifications, and runs custom success/denied actions.
-- Fails closed: if no users are allowed, the lock will not unlock.
+- Fingerprint and NFC inputs each accept zero, one, or multiple event entities. Leave either empty to disable that method; leaving both empty makes the automation inert.
+- New access policy: **Any ACTIVE registered UniFi Protect user** or **Specific allowlisted users**.
+- Both methods validate current user registration and ACTIVE status using the Protect keyring.
+- Unknown credentials, inactive users, missing user IDs, ambiguous ownership, and unsupported policy values cannot unlock.
+- Existing logging, notifications, custom actions, and successful-unlock cooldown remain available.
 
 ## Requirements
 
-- Home Assistant with the **UniFi Protect** integration configured in **Full access** mode.
-- A compatible UniFi Protect doorbell exposing fingerprint and NFC event entities.
-- A Home Assistant `lock.*` entity.
-- Fingerprints and/or NFC cards registered to users in UniFi Protect.
+- Home Assistant with the UniFi Protect integration in **Full access** mode and the `unifiprotect.get_user_keyring_info` action available.
+- At least one compatible fingerprint or NFC event entity and a `lock.*` entity.
+- Credentials registered to users in UniFi Protect.
 
-The UniFi Protect event entities and `unifiprotect.get_user_keyring_info` action are not available in the API-key-only limited mode.
+All selected event entities and the selected Protect device must belong to the **same Protect instance**. Use separate automations for separate instances or locks. Every selected reader in this automation controls the same lock. API-key-only limited mode does not provide the required events/keyring action.
 
-## Install
+See the official [UniFi Protect integration documentation](https://www.home-assistant.io/integrations/unifiprotect/) and [keyring action reference](https://www.home-assistant.io/actions/unifiprotect.get_user_keyring_info/).
 
-### One-click
+## Install and configure
 
-Use the **Import Blueprint** button above.
-
-### Manual import
-
-1. In Home Assistant, go to **Settings → Automations & scenes → Blueprints**.
-2. Select **Import Blueprint**.
-3. Paste this URL:
-
+1. Use the import button above, or import this URL from **Settings → Automations & scenes → Blueprints**:
    `https://github.com/Teeseeone/unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml`
+2. Create an automation and select a **UniFi Protect device** from the correct instance.
+3. Select the optional **Fingerprint event entities** and **NFC event entities**.
+4. Select the **Smart lock**.
+5. Choose the **Access policy**:
+   - **Specific allowlisted users** (default): only ACTIVE registered users whose ULP IDs appear in **Allowed users** can unlock. An empty allowlist denies everyone.
+   - **Any ACTIVE registered UniFi Protect user**: every currently ACTIVE registered user recognized by a fingerprint event or owning the scanned NFC card can unlock. The allowlist does not restrict access in this mode.
+6. Optionally configure notifications, Activity logging, cooldown, and custom actions.
 
-4. Preview and import it.
+To find ULP IDs, run **UniFi Protect: Get user keyring info** under **Settings → Tools → Actions**, selecting a device from the correct instance. Add the user's `ulp_id`, not their NFC ID, to Allowed users along with a friendly name.
 
-## Configure
-
-Create an automation from the imported blueprint and select:
-
-- **UniFi Protect device** — any device from the same Protect instance as the doorbell.
-- **Fingerprint event entity** — the doorbell's fingerprint event entity.
-- **NFC event entity** — the doorbell's NFC event entity.
-- **Smart lock** — the lock to unlock.
-- **Allowed users** — each permitted person's name and UniFi `ulp_id`.
-
-### Find a user's ULP ID
-
-In Home Assistant:
-
-1. Go to **Settings → Tools → Actions**.
-2. Run **UniFi Protect: Get user keyring info**.
-3. Select a device from the correct Protect instance.
-4. Copy the user's `ulp_id` from the response.
-
-Example:
+Example response:
 
 ```yaml
 users:
@@ -72,31 +50,34 @@ users:
         fingerprint_id: "1"
 ```
 
-Add the **ULP ID**, not the NFC ID, to **Allowed users**.
+## Authorization
 
-## How NFC authorization works
+A new event ID is required. State restoration, unknown/unavailable transitions, and unchanged event IDs are ignored.
 
-A card scan by itself does **not** unlock the door. The blueprint:
+For an `identified` fingerprint event, the reported `ulp_id` must resolve to exactly one current keyring user. Protect performs the fingerprint recognition; the event reports the user ID rather than an individual fingerprint ID.
 
-1. Receives the scanned `nfc_id` from the doorbell.
-2. Calls `unifiprotect.get_user_keyring_info`.
-3. Finds the user who currently owns that NFC card.
-4. Verifies that the user is `ACTIVE`.
-5. Verifies that the user's `ulp_id` is in **Allowed users**.
-6. Only then calls `lock.unlock`.
+For a `scanned` NFC event, the `nfc_id` must match a currently registered NFC key belonging to exactly one user. Removing the card from Protect removes its authorization without editing this automation.
 
-Removing a card from UniFi Protect therefore removes its access without editing the blueprint.
+In either case, the user must have status `ACTIVE` and satisfy the chosen policy before `lock.unlock` runs. A keyring action failure stops the automation before unlocking; it appears as an error in the automation trace and does not execute the normal denied actions.
 
-## Security notes
+The automation uses single mode: attempts arriving while it is running, including during the successful-unlock cooldown, are ignored.
 
-Home Assistant warns that unknown NFC cards also trigger NFC scan events, so NFC IDs must always be validated before using them for door unlocking. The blueprint does this automatically against the current Protect keyring.
+Custom actions can use `access_name`, `access_method`, `access_ulp_id`, `scanned_nfc_id`, and `access_event_id`; denied actions also have `denial_reason`.
 
-NFC card identifiers may be based on a card serial number and can be easier to duplicate than a fingerprint. Fingerprint is therefore the stronger credential.
+## Updating an existing automation
 
-## Credits
+Re-import the blueprint, reload automations, and review/save each automation. The input keys `fingerprint_entity`, `nfc_entity`, and `allowed_users` are preserved. Existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists. The new policy defaults to Specific allowlisted users.
 
-Based on the original fingerprint unlock blueprint from [epiech/ha-blueprints](https://github.com/epiech/ha-blueprints), created by EPie and released under the MIT License.
+## Security and verification
 
-## License
+Unknown NFC cards also produce scan events. The blueprint validates them against the current keyring. NFC serial identifiers can be duplicated; registration checks do not make NFC clone-resistant.
+
+Reconnect guards and event-ID comparison prevent common restored/duplicate events; they are not a persistent history of every previously seen event.
+
+Before relying on the automation, test both credential methods you enable, ACTIVE and inactive users, an unknown NFC card, an unrecognized fingerprint, both policies, an empty allowlist, and a Protect/Home Assistant restart. Inspect automation traces and verify the intended lock behavior.
+
+## Credits and license
+
+Derived from the original fingerprint unlock blueprint by EPie at [epiech/ha-blueprints](https://github.com/epiech/ha-blueprints), released under the MIT License. Original EPie attribution and copyright are preserved; modifications are credited to Teeseeone.
 
 MIT — see [LICENSE](LICENSE).
