@@ -1,0 +1,443 @@
+# UniFi Protect Secure Access Unlock
+# Derived from epiech/ha-blueprints (MIT licensed).
+# Original work Copyright (c) 2026 EPie.
+# Modifications Copyright (c) 2026 Teeseeone.
+
+blueprint:
+  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock
+  description: >
+    Securely unlocks a Home Assistant lock using approved fingerprints or
+    registered NFC cards from a compatible UniFi Protect doorbell.
+
+    Fingerprints are authorized using the UniFi user's ulp_id.
+
+    NFC cards are verified against the current UniFi Protect user keyring.
+    The card must be registered in UniFi Protect, belong to an ACTIVE user,
+    and that user's ulp_id must be present in Allowed users.
+
+    Includes protection against restored/replayed events after Home Assistant
+    or UniFi Protect reconnects, optional notifications, Activity logging,
+    and custom success/denied actions.
+  domain: automation
+  author: Teeseeone (based on the original epiech blueprint)
+  source_url: https://github.com/Teeseeone/unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml
+  homeassistant:
+    min_version: 2025.1.0
+
+  input:
+    protect_device:
+      name: UniFi Protect device
+      description: >
+        Select any device from the same UniFi Protect instance as the doorbell.
+        This is used to read the current user keyring for NFC validation.
+      selector:
+        device:
+          filter:
+            - integration: unifiprotect
+
+    fingerprint_entity:
+      name: Fingerprint event entity
+      description: >
+        The fingerprint event entity from the UniFi doorbell, for example
+        event.g4_doorbell_pro_fingerprint.
+      selector:
+        entity:
+          filter:
+            - domain: event
+              integration: unifiprotect
+
+    nfc_entity:
+      name: NFC event entity
+      description: >
+        The NFC event entity from the UniFi doorbell, for example
+        event.g4_doorbell_pro_nfc.
+      selector:
+        entity:
+          filter:
+            - domain: event
+              integration: unifiprotect
+
+    lock_entity:
+      name: Smart lock
+      description: The Home Assistant lock entity to unlock after authorization.
+      selector:
+        entity:
+          filter:
+            - domain: lock
+
+    allowed_users:
+      name: Allowed users
+      description: >
+        Add each UniFi Protect user who is allowed to unlock the door.
+        Enter the person's friendly name and their UniFi ulp_id.
+        The same permission applies to that user's registered fingerprints
+        and registered NFC cards.
+      default: []
+      selector:
+        object:
+          multiple: true
+          label_field: name
+          description_field: ulp_id
+          fields:
+            name:
+              label: Name
+              required: true
+              selector:
+                text: {}
+            ulp_id:
+              label: UniFi ULP ID
+              required: true
+              selector:
+                text: {}
+
+    notify_entities:
+      name: Notification targets
+      description: Optional notify entities for successful or denied access attempts.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: notify
+          multiple: true
+
+    notify_on_success:
+      name: Notify on successful unlock
+      default: true
+      selector:
+        boolean: {}
+
+    notify_on_denied:
+      name: Notify on denied access
+      default: false
+      selector:
+        boolean: {}
+
+    activity_logging:
+      name: Log access attempts
+      description: Add successful and denied attempts to Home Assistant Activity.
+      default: true
+      selector:
+        boolean: {}
+
+    cooldown_seconds:
+      name: Successful unlock cooldown
+      description: Prevent repeated unlock commands for a short period.
+      default: 3
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          mode: slider
+          unit_of_measurement: seconds
+
+    success_actions:
+      name: Additional actions after successful unlock
+      description: >
+        Optional actions after a successful fingerprint or NFC authorization.
+        Available variables: access_name, access_method, access_ulp_id,
+        scanned_nfc_id, access_event_id.
+      default: []
+      selector:
+        action: {}
+
+    denied_actions:
+      name: Additional actions after denied access
+      description: >
+        Optional actions after a denied fingerprint or NFC attempt.
+        Available variables: access_name, access_method, denial_reason,
+        scanned_nfc_id, access_ulp_id, access_event_id.
+      default: []
+      selector:
+        action: {}
+
+triggers:
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input fingerprint_entity
+    id: fingerprint
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input nfc_entity
+    id: nfc
+
+conditions:
+  # Reject restored/replayed state changes after startup/reconnect.
+  - condition: template
+    value_template: >-
+      {{
+        trigger.event.data.old_state is not none
+        and trigger.event.data.new_state is not none
+        and not trigger.event.data.old_state.attributes.get('restored', false)
+        and trigger.event.data.old_state.state != 'unavailable'
+        and trigger.event.data.new_state.state != 'unavailable'
+      }}
+
+  # Require a genuinely new UniFi event ID.
+  - condition: template
+    value_template: >-
+      {% set old_id = trigger.event.data.old_state.attributes.get('event_id', '') %}
+      {% set new_id = trigger.event.data.new_state.attributes.get('event_id', '') %}
+      {{ new_id != '' and new_id != old_id }}
+
+actions:
+  - variables:
+      allowed_users_config: !input allowed_users
+      notify_targets: !input notify_entities
+      do_notify_success: !input notify_on_success
+      do_notify_denied: !input notify_on_denied
+      do_activity_logging: !input activity_logging
+      cooldown: !input cooldown_seconds
+
+      access_method: >-
+        {% if trigger.id == 'fingerprint' %}
+          Fingerprint
+        {% elif trigger.id == 'nfc' %}
+          NFC
+        {% else %}
+          Unknown
+        {% endif %}
+
+      access_event_type: >-
+        {{ trigger.event.data.new_state.attributes.get('event_type', '') }}
+
+      access_event_id: >-
+        {{ trigger.event.data.new_state.attributes.get('event_id', '') }}
+
+      fingerprint_ulp_id: >-
+        {% if trigger.id == 'fingerprint' %}
+          {{ trigger.event.data.new_state.attributes.get('ulp_id', '') }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+
+      scanned_nfc_id: >-
+        {% if trigger.id == 'nfc' %}
+          {{ trigger.event.data.new_state.attributes.get('nfc_id', '') }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+
+      keyring:
+        users: []
+
+  # For NFC scans, fetch the current Protect keyring so only currently
+  # registered cards can authorize access.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{
+                trigger.id == 'nfc'
+                and access_event_type == 'scanned'
+                and scanned_nfc_id != ''
+              }}
+        sequence:
+          - action: unifiprotect.get_user_keyring_info
+            data:
+              device_id: !input protect_device
+            response_variable: keyring
+
+  - variables:
+      nfc_user_ulp_id: >-
+        {% set ns = namespace(value='') %}
+        {% for user in keyring.get('users', []) %}
+          {% for key in user.get('keys', []) %}
+            {% if key.get('key_type', '') == 'nfc'
+                  and key.get('nfc_id', '') == scanned_nfc_id %}
+              {% set ns.value = user.get('ulp_id', '') %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        {{ ns.value }}
+
+      nfc_user_name: >-
+        {% set ns = namespace(value='') %}
+        {% for user in keyring.get('users', []) %}
+          {% for key in user.get('keys', []) %}
+            {% if key.get('key_type', '') == 'nfc'
+                  and key.get('nfc_id', '') == scanned_nfc_id %}
+              {% set ns.value = user.get('full_name', '') %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        {{ ns.value }}
+
+      nfc_user_status: >-
+        {% set ns = namespace(value='') %}
+        {% for user in keyring.get('users', []) %}
+          {% for key in user.get('keys', []) %}
+            {% if key.get('key_type', '') == 'nfc'
+                  and key.get('nfc_id', '') == scanned_nfc_id %}
+              {% set ns.value = user.get('user_status', '') %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        {{ ns.value }}
+
+  - variables:
+      access_ulp_id: >-
+        {% if trigger.id == 'fingerprint' %}
+          {{ fingerprint_ulp_id }}
+        {% elif trigger.id == 'nfc' %}
+          {{ nfc_user_ulp_id }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+
+      allowed_ulp_ids: >-
+        {{ allowed_users_config | map(attribute='ulp_id') | list }}
+
+  - variables:
+      access_name: >-
+        {% set matches = allowed_users_config
+          | selectattr('ulp_id', 'equalto', access_ulp_id)
+          | list %}
+        {% if matches | count > 0 %}
+          {{ matches[0].name }}
+        {% elif trigger.id == 'nfc' and nfc_user_name != '' %}
+          {{ nfc_user_name }}
+        {% elif trigger.id == 'fingerprint' and access_event_type == 'not_identified' %}
+          Unknown fingerprint
+        {% elif trigger.id == 'nfc' %}
+          Unknown NFC card
+        {% else %}
+          Unknown user
+        {% endif %}
+
+      fingerprint_authorized: >-
+        {{
+          trigger.id == 'fingerprint'
+          and access_event_type == 'identified'
+          and access_ulp_id != ''
+          and access_ulp_id in allowed_ulp_ids
+        }}
+
+      nfc_registered: >-
+        {{
+          trigger.id == 'nfc'
+          and access_event_type == 'scanned'
+          and scanned_nfc_id != ''
+          and nfc_user_ulp_id != ''
+          and (nfc_user_status | upper) == 'ACTIVE'
+        }}
+
+  - variables:
+      nfc_authorized: >-
+        {{ nfc_registered and nfc_user_ulp_id in allowed_ulp_ids }}
+
+      access_authorized: >-
+        {{ fingerprint_authorized or nfc_authorized }}
+
+      denial_reason: >-
+        {% if trigger.id == 'fingerprint' %}
+          {% if access_event_type == 'not_identified' %}
+            Fingerprint was not recognized by UniFi Protect
+          {% elif fingerprint_ulp_id == '' %}
+            Fingerprint did not contain a UniFi user ID
+          {% elif fingerprint_ulp_id not in allowed_ulp_ids %}
+            Recognized fingerprint belongs to a user that is not allowed
+          {% else %}
+            Fingerprint authorization failed
+          {% endif %}
+        {% elif trigger.id == 'nfc' %}
+          {% if scanned_nfc_id == '' %}
+            NFC event did not contain a card ID
+          {% elif nfc_user_ulp_id == '' %}
+            NFC card is not registered in UniFi Protect
+          {% elif (nfc_user_status | upper) != 'ACTIVE' %}
+            NFC card belongs to an inactive UniFi Protect user
+          {% elif nfc_user_ulp_id not in allowed_ulp_ids %}
+            Registered NFC card belongs to a user that is not allowed
+          {% else %}
+            NFC authorization failed
+          {% endif %}
+        {% else %}
+          Unknown access method
+        {% endif %}
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ access_authorized | bool }}"
+        sequence:
+          - action: lock.unlock
+            target:
+              entity_id: !input lock_entity
+
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ do_activity_logging | bool }}"
+                sequence:
+                  - action: logbook.log
+                    data:
+                      name: Door access
+                      message: >-
+                        Door unlocked by {{ access_name }} using {{ access_method }}.
+                      entity_id: !input lock_entity
+                      domain: lock
+
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ do_notify_success | bool and notify_targets | length > 0 }}
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_targets }}"
+                      sequence:
+                        - action: notify.send_message
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                          data:
+                            title: "🔓 Door unlocked"
+                            message: >-
+                              {{ access_name }} unlocked the door using {{ access_method }}.
+
+          - choose: []
+            default: !input success_actions
+
+          - delay:
+              seconds: "{{ cooldown | int(0) }}"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ not (access_authorized | bool) }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ do_activity_logging | bool }}"
+                sequence:
+                  - action: logbook.log
+                    data:
+                      name: Door access denied
+                      message: "{{ denial_reason }}."
+                      entity_id: !input lock_entity
+                      domain: lock
+
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ do_notify_denied | bool and notify_targets | length > 0 }}
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_targets }}"
+                      sequence:
+                        - action: notify.send_message
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                          data:
+                            title: "🔐 Door access denied"
+                            message: "{{ denial_reason }}."
+
+          - choose: []
+            default: !input denied_actions
+
+mode: single
+max_exceeded: silent
