@@ -1,6 +1,6 @@
 # v0.3 — Event freshness and fingerprint enrollment checks
 
-Release candidate; publish after Home Assistant and physical reader/lock verification.
+Released 2026-10-02. All 18 local mocked regression tests passed; live Home Assistant and physical reader/lock verification is still pending.
 
 ## Changes
 
@@ -19,6 +19,6 @@ The keyring action reads Home Assistant's synchronized integration data, without
 
 Re-import the existing blueprint URL, reload automations, and review/save each automation. No v0.2 input keys or defaults change; existing policies and allowlists remain in effect. The freshness limit is fixed at 10 seconds. Restoration/event-ID/freshness filtering and expiry during lookup stop without normal denied hooks; keyring errors also stop before unlocking and appear in traces.
 
-## Verification before publishing
+## Verification
 
-Run the automated regression checks described in the README. Validate the blueprint in Home Assistant and test the enabled credentials, allowlist policies, inactive users, fingerprint removal, unknown NFC cards, reconnect/restart behavior, and delayed/invalid timestamps using a safe test target. Local mocked checks do not confirm live compatibility or physical lock behavior.
+All 18 local mocked regression tests passed, and all templates compiled. You can rerun the automated checks described in the README. Validate the blueprint in Home Assistant and test the enabled credentials, allowlist policies, inactive users, fingerprint removal, unknown NFC cards, reconnect/restart behavior, and delayed/invalid timestamps using a safe test target. Local mocked checks do not confirm live compatibility or physical lock behavior.
