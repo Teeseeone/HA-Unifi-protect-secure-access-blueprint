@@ -4,13 +4,17 @@
 # Modifications Copyright (c) 2026 Teeseeone.
 
 blueprint:
-  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.2
+  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.3
   description: |
-    v0.2: Unlock using optional/multiple fingerprint and NFC event entities
-    from one UniFi Protect instance. Choose any ACTIVE registered user or
-    specific allowlisted users. Both methods verify current ACTIVE user status
-    against the Protect keyring; NFC must match a currently registered card.
-    Empty allowlists deny access under the specific-users policy.
+    v0.3: Unlock using optional/multiple fingerprint and NFC event entities
+    from one UniFi Protect instance. Specific allowlisted users is the default;
+    an empty allowlist denies access. Any ACTIVE registered user is optional.
+    Both methods require an event-entity timestamp between 0 and 10 seconds
+    old, checked before keyring lookup and again immediately before unlocking.
+    Both verify ACTIVE user status against the returned Protect keyring;
+    fingerprints require at least one registered fingerprint key for that user,
+    and NFC must match a registered card. Keyring data depends on integration
+    synchronization; the action does not force a fresh network fetch.
     Includes reconnect/restoration guards, notifications, Activity logging,
     cooldown and custom success/denied actions.
 
@@ -35,7 +39,8 @@ blueprint:
 
     ACTIVE is a UniFi account status; it does not indicate presence at home
     or a current login. An ACTIVE account alone does not unlock the door:
-    a recognized fingerprint or registered NFC card is also required.
+    a recognized fingerprint with a fingerprint key still listed for the user,
+    or a registered NFC card, is also required.
 
     **Any ACTIVE registered UniFi Protect user:** leave Allowed users empty.
     Credentials belonging to currently ACTIVE users can unlock through the
@@ -213,7 +218,7 @@ triggers:
     id: nfc
 
 conditions:
-  # Reject restored/replayed state changes after startup/reconnect.
+  # Reject restored and startup/reconnect transitions.
   - condition: template
     value_template: >-
       {{
@@ -225,12 +230,20 @@ conditions:
         and trigger.to_state.state not in ['unknown', 'unavailable']
       }}
 
-  # Require a genuinely new UniFi event ID.
+  # Require a non-empty UniFi event ID different from the previous state.
   - condition: template
     value_template: >-
       {% set old_id = trigger.from_state.attributes.get('event_id', '') %}
       {% set new_id = trigger.to_state.attributes.get('event_id', '') %}
       {{ new_id not in ['', none] and new_id != old_id }}
+
+  # Use the event entity's timestamp, not last_changed/last_updated.
+  # Reject invalid, non-positive, future and more-than-10-second-old states.
+  - condition: template
+    value_template: >-
+      {% set event_time = as_timestamp(trigger.to_state.state, default=0) %}
+      {% set age = as_timestamp(now()) - event_time %}
+      {{ event_time > 0 and 0 <= age <= 10 }}
 
 actions:
   - variables:
@@ -323,6 +336,16 @@ actions:
         {{ matched_users[0].get('user_status', '') if matched_users | count == 1 else '' }}
       registered_name: >-
         {{ matched_users[0].get('full_name', '') if matched_users | count == 1 else '' }}
+      has_registered_fingerprint: >-
+        {% set ns = namespace(found=false) %}
+        {% if matched_users | count == 1 %}
+          {% for key in matched_users[0].get('keys', []) or [] %}
+            {% if key is mapping and key.get('key_type', '') == 'fingerprint' %}
+              {% set ns.found = true %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.found }}
 
   - variables:
       access_name: >-
@@ -339,6 +362,7 @@ actions:
         {{ matched_users | count == 1
            and access_ulp_id not in ['', none]
            and access_user_status == 'ACTIVE'
+           and (trigger.id != 'fingerprint' or has_registered_fingerprint | bool)
            and (policy == 'any_active_user'
                 or (policy == 'specific_users' and access_ulp_id in allowed_ulp_ids)) }}
       denial_reason: >-
@@ -354,6 +378,8 @@ actions:
           Registered user has no UniFi ULP ID
         {% elif access_user_status != 'ACTIVE' %}
           Credential belongs to an inactive UniFi Protect user
+        {% elif trigger.id == 'fingerprint' and not (has_registered_fingerprint | bool) %}
+          User has no currently registered fingerprint key
         {% elif policy == 'specific_users' and access_ulp_id not in allowed_ulp_ids %}
           Registered user is not allowlisted
         {% else %}
@@ -365,6 +391,13 @@ actions:
           - condition: template
             value_template: "{{ access_authorized | bool }}"
         sequence:
+          # Recheck after keyring lookup; a slow lookup must not unlock late.
+          - condition: template
+            value_template: >-
+              {% set event_time = as_timestamp(trigger.to_state.state, default=0) %}
+              {% set age = as_timestamp(now()) - event_time %}
+              {{ event_time > 0 and 0 <= age <= 10 }}
+
           - action: lock.unlock
             target:
               entity_id: !input lock_entity
