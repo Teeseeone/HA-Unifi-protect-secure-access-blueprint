@@ -1,0 +1,24 @@
+# v0.3 — Event freshness and fingerprint enrollment checks
+
+Release candidate; publish after Home Assistant and physical reader/lock verification.
+
+## Changes
+
+- Both fingerprint and NFC paths reject invalid/non-positive event timestamps, future timestamps, and event entity states older than 10 seconds. Ages from 0 to 10 seconds inclusive are accepted.
+- Freshness is checked before keyring lookup and immediately before the unlock action. A lookup that runs beyond the window stops without unlocking.
+- Fingerprint events now require the uniquely matched ACTIVE user to have at least one `key_type: fingerprint` entry in the returned Protect keyring. Missing/empty registration uses the existing denied actions, Activity logging, and optional denied notifications.
+- Specific allowlisted users remains the default. An empty allowlist denies all access under this policy. NFC ID validation, ACTIVE status, unique ownership, restoration/reconnect guards, optional/multiple readers, success/denied actions, notifications, logging, and cooldown remain in place.
+
+## Security model
+
+Protect still recognizes the fingerprint. The enrollment check operates at user level because the fingerprint event supplies `ulp_id`, not the exact fingerprint ID. Deleting all a user's fingerprints denies fingerprint access once the returned keyring reflects the deletion; deleting only the scanned finger cannot be detected if another fingerprint remains.
+
+The keyring action reads Home Assistant's synchronized integration data, without forcing a fresh network fetch. The freshness check uses Home Assistant's event entity timestamp, which reflects when it processes an event. These checks do not provide instant revocation, an atomic authorization/unlock transaction, or persistent replay protection. NFC serial-number validation does not prevent cloning. See the [README security model and source references](README.md#security-and-verification).
+
+## Upgrade
+
+Re-import the existing blueprint URL, reload automations, and review/save each automation. No v0.2 input keys or defaults change; existing policies and allowlists remain in effect. The freshness limit is fixed at 10 seconds. Restoration/event-ID/freshness filtering and expiry during lookup stop without normal denied hooks; keyring errors also stop before unlocking and appear in traces.
+
+## Verification before publishing
+
+Run the automated regression checks described in the README. Validate the blueprint in Home Assistant and test the enabled credentials, allowlist policies, inactive users, fingerprint removal, unknown NFC cards, reconnect/restart behavior, and delayed/invalid timestamps using a safe test target. Local mocked checks do not confirm live compatibility or physical lock behavior.

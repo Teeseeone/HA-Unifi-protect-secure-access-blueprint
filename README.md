@@ -1,13 +1,22 @@
-# UniFi Protect Secure Access Blueprint v0.2
+# UniFi Protect Secure Access Blueprint v0.3
 
 A Home Assistant automation blueprint for unlocking a smart lock using registered fingerprints and NFC cards from compatible UniFi Protect doorbells.
 
 [![Import Blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FTeeseeone%2Funifi-protect-secure-access-blueprint%2Fblob%2Fmain%2Funifi_protect_secure_access_unlock.yaml)
 
-## What changed in v0.2
+## What changed in v0.3
+
+- Fingerprint and NFC events require a valid, positive event-entity timestamp with an age of **0 through 10 seconds, inclusive**. Future timestamps and older events are rejected.
+- Freshness is checked before the keyring action and again immediately before `lock.unlock`, so a slow lookup cannot authorize a late unlock.
+- Fingerprint authorization now also requires at least one `key_type: fingerprint` key for the uniquely matched ACTIVE user in the returned keyring. Removing all that user's fingerprints denies subsequent fingerprint attempts once the integration reflects the removal.
+- **Specific allowlisted users** remains the default; an empty allowlist denies everyone. NFC validation, ACTIVE-user checks, ambiguity rejection, reconnect/restoration guards, logging, notifications, custom actions, and cooldown are retained.
+
+See [v0.3 release notes](RELEASE_NOTES.md) for upgrade and verification details.
+
+## Features retained from v0.2
 
 - Fingerprint and NFC inputs each accept zero, one, or multiple event entities. Leave either empty to disable that method; leaving both empty makes the automation inert.
-- New access policy: **Any ACTIVE registered UniFi Protect user** or **Specific allowlisted users**.
+- Access policy: **Specific allowlisted users** (default) or **Any ACTIVE registered UniFi Protect user**.
 - Both methods validate current user registration and ACTIVE status using the Protect keyring.
 - Unknown credentials, inactive users, missing user IDs, ambiguous ownership, and unsupported policy values cannot unlock.
 - Existing logging, notifications, custom actions, and successful-unlock cooldown remain available.
@@ -31,7 +40,7 @@ See the official [UniFi Protect integration documentation](https://www.home-assi
 4. Select the **Smart lock**.
 5. Choose the **Access policy**:
    - **Specific allowlisted users** (default): only ACTIVE registered users whose ULP IDs appear in **Allowed users** can unlock. An empty allowlist denies everyone.
-   - **Any ACTIVE registered UniFi Protect user**: every currently ACTIVE registered user recognized by a fingerprint event or owning the scanned NFC card can unlock. The allowlist does not restrict access in this mode.
+   - **Any ACTIVE registered UniFi Protect user**: every ACTIVE user meeting the fingerprint or NFC checks below can unlock. The allowlist does not restrict access in this mode, including for users/credentials added later.
 6. Optionally configure notifications, Activity logging, cooldown, and custom actions.
 
 ## View users, ACTIVE status and registered credentials
@@ -75,11 +84,15 @@ users:
 
 A new event ID is required. State restoration, unknown/unavailable transitions, and unchanged event IDs are ignored.
 
-For an `identified` fingerprint event, the reported `ulp_id` must resolve to exactly one current keyring user. Protect performs the fingerprint recognition; the event reports the user ID rather than an individual fingerprint ID.
+Both methods must pass a fixed freshness check: `as_timestamp(trigger.to_state.state, default=0)` must be positive, and its age relative to Home Assistant's `now()` must be between **0 and 10 seconds inclusive**. Missing/unparseable, non-positive, future, and older timestamps are ignored before the keyring action. This check uses the event entity's state timestamp, not `last_changed` or `last_updated`, and runs again immediately before unlocking. If the event expires during the keyring lookup, the action sequence stops before unlocking.
 
-For a `scanned` NFC event, the `nfc_id` must match a currently registered NFC key belonging to exactly one user. Removing the card from Protect removes its authorization without editing this automation.
+For an `identified` fingerprint event, the reported `ulp_id` must resolve to exactly one keyring user, and that user must have at least one key with `key_type: fingerprint`. Missing or empty fingerprint registrations deny access even if the user is ACTIVE and allowlisted. Protect performs fingerprint recognition; the event reports the user ID rather than an individual fingerprint ID. This is a user-level enrollment check: it cannot prove that the exact finger scanned remains enrolled if another fingerprint is still registered for that user.
+
+For a `scanned` NFC event, the `nfc_id` must match a registered NFC key belonging to exactly one user. Removing the card from Protect removes its authorization once that removal is reflected in the integration's keyring data, without editing this automation. NFC authorization does not require a fingerprint key.
 
 In either case, the user must have status `ACTIVE` and satisfy the chosen policy before `lock.unlock` runs. A keyring action failure stops the automation before unlocking; it appears as an error in the automation trace and does not execute the normal denied actions.
+
+Events filtered by the restoration/event-ID/freshness guards, including expiry during lookup, stop without normal denied logging, notifications, or custom actions. Credential/policy denials, including a missing fingerprint registration, use the existing denied logging/notification/action settings.
 
 The automation uses single mode: attempts arriving while it is running, including during the successful-unlock cooldown, are ignored.
 
@@ -87,15 +100,27 @@ Custom actions can use `access_name`, `access_method`, `access_ulp_id`, `scanned
 
 ## Updating an existing automation
 
-Re-import the blueprint, reload automations, and review/save each automation. The input keys `fingerprint_entity`, `nfc_entity`, and `allowed_users` are preserved. Existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists. The new policy defaults to Specific allowlisted users.
+Re-import the blueprint, reload automations, and review/save each automation. No input keys or defaults change from v0.2. Existing policies and allowlists remain in effect; **Specific allowlisted users** remains the default for new automations. If upgrading from an older single-reader version, existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists.
+
+The 10-second limit is fixed. Events that expire while Home Assistant or the keyring action is busy no longer unlock; inspect the automation trace if a legitimate attempt is ignored. Keep Home Assistant's system clock correct.
 
 ## Security and verification
 
-Unknown NFC cards also produce scan events. The blueprint validates them against the current keyring. NFC serial identifiers can be duplicated; registration checks do not make NFC clone-resistant.
+Unknown NFC cards also produce scan events. The blueprint validates them against the returned keyring. As the [Home Assistant NFC documentation](https://www.home-assistant.io/integrations/unifiprotect/#nfc-card-scanned-event) explains, third-party card serial identifiers can be duplicated; registration checks do not make NFC clone-resistant or establish cryptographic authentication for a particular card.
 
-Reconnect guards and event-ID comparison prevent common restored/duplicate events; they are not a persistent history of every previously seen event.
+The keyring action is called for each valid credential attempt. However, the [Home Assistant action implementation](https://github.com/home-assistant/core/blob/dev/homeassistant/components/unifiprotect/services.py) reads the integration's synchronized Protect users/keyrings; it does not force a fresh network fetch. Registration/status changes take effect when reflected in that data. This is not an atomic authorization-and-unlock transaction or a guarantee of immediate revocation.
 
-Before relying on the automation, test both credential methods you enable, ACTIVE and inactive users, an unknown NFC card, an unrecognized fingerprint, both policies, an empty allowlist, and a Protect/Home Assistant restart. Inspect automation traces and verify the intended lock behavior.
+The [Home Assistant event entity implementation](https://github.com/home-assistant/core/blob/dev/homeassistant/components/event/__init__.py) timestamps events when Home Assistant processes them. The freshness check therefore limits the age of the event entity state; it cannot prove the age of the original physical scan if an upstream event is delivered again with a new timestamp. Reconnect guards and event-ID comparison filter common restored/duplicate events, but compare only the preceding ID and do not keep a persistent replay history.
+
+This blueprint adds optional/multiple readers and credential checks to Protect's recognition, with fail-closed authorization. It still trusts Protect, the Home Assistant integration, the configured readers, and the lock's own security. Custom actions run with your Home Assistant permissions; a custom denied action that unlocks a door would bypass the intended denial behavior.
+
+Before relying on the automation, test both credential methods you enable, ACTIVE and inactive users, an unknown NFC card, an unrecognized fingerprint, both policies, an empty allowlist, and a Protect/Home Assistant restart. Also remove all fingerprints from an allowed ACTIVE user and verify fingerprint denial after the keyring response reflects the removal; verify that a registered NFC card for that user can still authorize. Check stale/future/invalid timestamps and expiry during a slow keyring lookup using a test automation and safe target. Inspect traces and verify the intended lock behavior.
+
+## Automated regression checks
+
+From the repository root, install the test dependencies with `python -m pip install -r tests/requirements.txt`, then run `python -m unittest discover -s tests -v`.
+
+The tests parse the actual blueprint YAML and evaluate its Jinja templates with mocked state, clock, keyring response, and action execution. They cover freshness boundaries, lookup delays, fingerprint enrollment removal, NFC authorization, policy denials, reconnect guards, and keyring failures. They do not replace validation in a running Home Assistant instance or physical reader/lock testing.
 
 ## Credits and license
 
