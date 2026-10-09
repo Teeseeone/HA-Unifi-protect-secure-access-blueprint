@@ -35,6 +35,26 @@ FINGERPRINT = {"key_type": "fingerprint", "fingerprint_id": "1"}
 NFC = {"key_type": "nfc", "nfc_id": "CARD-A"}
 
 
+def blueprint_inputs():
+    """HA sections group editor controls; input names remain flat at runtime."""
+    result = {}
+    for name, config in BLUEPRINT["blueprint"]["input"].items():
+        inputs = config["input"] if "input" in config else {name: config}
+        if result.keys() & inputs.keys():
+            raise AssertionError("Duplicate blueprint input names")
+        result.update(inputs)
+    return result
+
+
+VOICE_SETTINGS = {
+    "voice_greetings": [
+        {"name": "Greeting label", "ulp_id": "USER-A", "voice_message": "Hei Thomas!"},
+    ],
+    "greeting_tts_entity": "tts.piper",
+    "greeting_speaker_entity": "media_player.kitchen",
+}
+
+
 def user(**changes):
     return {
         "ulp_id": "USER-A", "full_name": "User A", "user_status": "ACTIVE",
@@ -83,10 +103,11 @@ class StopSequence(Exception):
 
 
 class Run:
-    def __init__(self, event=None, response=None, lookup_delay=0, lookup_error=False, **inputs):
+    def __init__(self, event=None, response=None, lookup_delay=0, lookup_error=False,
+                 service_errors=(), **inputs):
         self.inputs = {
             name: deepcopy(config.get("default"))
-            for name, config in BLUEPRINT["blueprint"]["input"].items()
+            for name, config in blueprint_inputs().items()
         }
         self.inputs.update({
             "protect_device": "DEVICE-A", "lock_entity": "lock.test",
@@ -99,8 +120,10 @@ class Run:
         self.response = {"users": [user()]} if response is None else response
         self.lookup_delay = lookup_delay
         self.lookup_error = lookup_error
+        self.service_errors = service_errors
         self.now = NOW
         self.calls = []
+        self.action_targets = []
         self.error = None
         self.stopped = False
         self.env = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
@@ -149,6 +172,11 @@ class Run:
             elif "action" in step:
                 action = step["action"]
                 self.calls.append((action, self.render(step.get("data", {}))))
+                self.action_targets.append((action, self.render(step.get("target", {}))))
+                if action in self.service_errors:
+                    if step.get("continue_on_error", False):
+                        continue
+                    raise RuntimeError(f"Mock {action} failed")
                 if action == "unifiprotect.get_user_keyring_info":
                     if self.lookup_error:
                         raise RuntimeError("Mock keyring action failed")
@@ -185,6 +213,7 @@ class BlueprintSecurityTests(unittest.TestCase):
             self.assertIsNone(result.error)
         self.assertEqual(result.count("lock.unlock"), 0)
         self.assertEqual(result.count("test.success"), 0)
+        self.assertEqual(result.count("tts.speak"), 0)
         return result
 
     def test_freshness_boundaries_for_both_methods(self):
@@ -349,10 +378,196 @@ class BlueprintSecurityTests(unittest.TestCase):
         self.assertEqual(run.count("notify.send_message"), 0)
         self.assertEqual(run.count("logbook.log"), 0)
 
-    def test_defaults_and_single_mode_preserved(self):
+    def test_personal_voice_greeting_only_on_authorized_success(self):
+        people = [{"name": "Thomas", "ulp_id": "USER-A",
+                   "voice_message": "Velkommen hjem, Thomas!"},
+                  {"name": "Andrea", "ulp_id": "USER-B",
+                   "voice_message": "Velkommen hjem, Andrea!"}]
+        settings = {
+            "voice_greetings": people,
+            "greeting_tts_entity": "tts.piper",
+            "greeting_speaker_entity": "media_player.kitchen",
+            "cooldown_seconds": 0,
+        }
+        for method in ("fingerprint", "nfc"):
+            with self.subTest(method=method):
+                run = self.assertUnlock(Run(event=trigger(method), **settings))
+                self.assertEqual(run.count("tts.speak"), 1)
+                spoken = [data for action, data in run.calls if action == "tts.speak"]
+                self.assertEqual(spoken[0]["message"], "Velkommen hjem, Thomas!")
+                self.assertEqual(spoken[0]["media_player_entity_id"], "media_player.kitchen")
+                self.assertEqual(run.count("test.success"), 1)
+                self.assertEqual(run.context["access_name"], "Allowed A")
+                actions = [action for action, _ in run.calls]
+                self.assertLess(actions.index("lock.unlock"), actions.index("tts.speak"))
+                self.assertLess(actions.index("tts.speak"), actions.index("test.success"))
+                self.assertIn(("tts.speak", {"entity_id": "tts.piper"}), run.action_targets)
+
+        for method in ("fingerprint", "nfc"):
+            with self.subTest(method=method, case="denied"):
+                run = self.assertNoUnlock(Run(
+                    event=trigger(method),
+                    response={"users": [user(user_status="INACTIVE")]},
+                    **settings,
+                ))
+                self.assertEqual(run.count("tts.speak"), 0)
+
+    def test_voice_opt_in_and_ulp_id_matching(self):
+        person = [{"name": "Thomas", "ulp_id": "USER-A",
+                   "voice_message": "Hei Thomas!"}]
+        for input_change in (
+            {},
+            {"greeting_tts_entity": "tts.piper"},
+            {"greeting_speaker_entity": "media_player.kitchen"},
+            {"greeting_tts_entity": "tts.piper", "greeting_speaker_entity": "media_player.kitchen",
+             "voice_greetings": [{"name": "Thomas", "ulp_id": "USER-A"}]},
+            {"greeting_tts_entity": "tts.piper", "greeting_speaker_entity": "media_player.kitchen",
+             "voice_greetings": [{"name": "Other", "ulp_id": "USER-B", "voice_message": "Hello!"}],
+             "access_policy": "any_active_user"},
+        ):
+            with self.subTest(inputs=input_change):
+                run = self.assertUnlock(Run(**{
+                    "access_policy": "any_active_user", "voice_greetings": person,
+                    **input_change,
+                }))
+                self.assertEqual(run.count("tts.speak"), 0)
+
+        run = self.assertUnlock(Run(
+            access_policy="any_active_user", allowed_users=[], voice_greetings=person,
+            greeting_tts_entity="tts.piper",
+            greeting_speaker_entity="media_player.kitchen",
+        ))
+        self.assertEqual(run.count("tts.speak"), 1)
+
+    def test_greetings_cannot_authorize_or_rename_users(self):
+        for method in ("fingerprint", "nfc"):
+            for allowlist in ([], [{"name": "Other", "ulp_id": "USER-B"}]):
+                with self.subTest(method=method, allowlist=allowlist):
+                    run = self.assertNoUnlock(Run(event=trigger(method), allowed_users=allowlist,
+                                                  **VOICE_SETTINGS))
+                    self.assertEqual(run.count("test.denied"), 1)
+                    self.assertEqual(run.context["access_name"], "User A")
+            run = self.assertUnlock(Run(event=trigger(method), access_policy="any_active_user",
+                                       allowed_users=[], notify_entities=["notify.test"],
+                                       **VOICE_SETTINGS))
+            self.assertEqual(run.count("tts.speak"), 1)
+            self.assertEqual(run.context["access_name"], "User A")
+            messages = [data["message"] for action, data in run.calls
+                        if action == "notify.send_message"]
+            self.assertEqual(messages, [f"User A unlocked the door using {run.context['access_method']}."])
+
+    def test_nfc_greeting_uses_keyring_owner_not_event_user_or_card_id(self):
+        event = trigger("nfc")
+        event.to_state.attributes["ulp_id"] = "USER-B"
+        greetings = [
+            {"name": "Same name", "ulp_id": "USER-B", "voice_message": "Wrong event user"},
+            {"name": "Same name", "ulp_id": "CARD-A", "voice_message": "Wrong card ID"},
+            {"name": "Different label", "ulp_id": "USER-A", "voice_message": "Correct owner"},
+        ]
+        run = self.assertUnlock(Run(event=event, **{**VOICE_SETTINGS, "voice_greetings": greetings}))
+        self.assertEqual(run.context["access_ulp_id"], "USER-A")
+        self.assertEqual([data["message"] for action, data in run.calls if action == "tts.speak"],
+                         ["Correct owner"])
+
+    def test_empty_missing_duplicate_and_unrelated_greetings_stay_silent(self):
+        for greetings in (
+            [], [{"ulp_id": "USER-A"}], [{"ulp_id": "USER-A", "voice_message": None}],
+            [{"ulp_id": "USER-A", "voice_message": " \n\t "}],
+            [{"ulp_id": "USER-B", "name": "Allowed A", "voice_message": "Wrong person"}],
+            VOICE_SETTINGS["voice_greetings"] * 2,
+            [None, "invalid", {}, {"ulp_id": "", "voice_message": "No ID"}],
+        ):
+            with self.subTest(greetings=greetings):
+                run = self.assertUnlock(Run(**{**VOICE_SETTINGS, "voice_greetings": greetings}))
+                self.assertEqual(run.count("tts.speak"), 0)
+
+    def test_old_allowed_user_greeting_is_not_used(self):
+        run = self.assertUnlock(Run(**{**VOICE_SETTINGS, "voice_greetings": [],
+            "allowed_users": [{"name": "Allowed A", "ulp_id": "USER-A", "voice_message": "Legacy"}],
+        }))
+        self.assertEqual(run.count("tts.speak"), 0)
+
+    def test_voice_text_is_literal_and_trimmed(self):
+        message = "Hei {{ 7 * 7 }}! {% set x = 'ignored' %}"
+        run = self.assertUnlock(Run(**{**VOICE_SETTINGS, "voice_greetings": [
+            {"ulp_id": "USER-A", "voice_message": f"  {message}  "},
+        ]}))
+        self.assertEqual([data["message"] for action, data in run.calls if action == "tts.speak"],
+                         [message])
+
+    def test_tts_failure_preserves_success_actions_notifications_and_cooldown(self):
+        run = self.assertUnlock(Run(service_errors=["tts.speak"], notify_entities=["notify.test"],
+                                   **VOICE_SETTINGS))
+        self.assertEqual(run.count("tts.speak"), 1)
+        self.assertEqual(run.count("test.success"), 1)
+        self.assertEqual(run.count("notify.send_message"), 1)
+        self.assertEqual(run.count("logbook.log"), 1)
+        self.assertEqual(run.now, NOW + timedelta(seconds=3))
+
+    def test_enabled_greetings_remain_silent_on_security_rejections_and_unlock_failure(self):
+        for method in ("fingerprint", "nfc"):
+            duplicate = trigger(method)
+            duplicate.to_state.attributes["event_id"] = "EVENT-OLD"
+            restored = trigger(method)
+            restored.to_state.attributes["restored"] = True
+            unknown = trigger(method)
+            unknown.to_state.attributes["event_type"] = "unknown"
+            for scenario in (
+                {"event": trigger(method, age=11)}, {"event": trigger(method, age=-1)},
+                {"event": duplicate}, {"event": restored}, {"event": unknown},
+                {"lookup_delay": 11}, {"lookup_error": True},
+                {"service_errors": ["lock.unlock"]},
+                {"response": {"users": [user(user_status="INACTIVE")]}},
+                {"response": {"users": [user(), user()]}},
+                {"response": {"users": [user(keys=[])]}},
+                {"response": {"users": [user(ulp_id="")]}},
+                {"allowed_users": []}, {"access_policy": "unsupported"},
+            ):
+                with self.subTest(method=method, scenario=scenario):
+                    run = Run(**{"event": trigger(method), **VOICE_SETTINGS, **scenario}).execute()
+                    self.assertEqual(run.count("tts.speak"), 0)
+                    self.assertEqual(run.count("test.success"), 0)
+                    if "service_errors" not in scenario:
+                        self.assertEqual(run.count("lock.unlock"), 0)
+                    if "lookup_error" in scenario or "service_errors" in scenario:
+                        self.assertIsInstance(run.error, RuntimeError)
+                    else:
+                        self.assertIsNone(run.error)
+
+    def test_editor_section_and_input_references(self):
         inputs = BLUEPRINT["blueprint"]["input"]
+        section = inputs["voice_greetings_section"]
+        self.assertEqual(section["name"], "Voice greetings per person")
+        self.assertTrue(section["collapsed"])
+        self.assertEqual(set(section["input"]),
+                         {"voice_greetings", "greeting_tts_entity", "greeting_speaker_entity"})
+        self.assertNotIn("voice_message", inputs["allowed_users"]["selector"]["object"]["fields"])
+        self.assertEqual(blueprint_inputs()["voice_greetings"]["selector"]["object"]["fields"]["ulp_id"]["required"], True)
+        for config in section["input"].values():
+            self.assertIn("default", config)
+        self.assertGreaterEqual(tuple(map(int, BLUEPRINT["blueprint"]["homeassistant"]["min_version"].split("."))),
+                                (2024, 6, 0))
+
+        def validate(value):
+            if isinstance(value, Input):
+                self.assertIn(value, blueprint_inputs())
+            elif isinstance(value, dict):
+                for child in value.values():
+                    validate(child)
+            elif isinstance(value, list):
+                for child in value:
+                    validate(child)
+            elif isinstance(value, str) and ("{{" in value or "{%" in value):
+                Run().env.from_string(value)
+
+        validate(BLUEPRINT)
+
+    def test_defaults_and_single_mode_preserved(self):
+        inputs = blueprint_inputs()
         self.assertEqual(inputs["access_policy"]["default"], "specific_users")
-        for name in ("allowed_users", "fingerprint_entity", "nfc_entity"):
+        self.assertEqual(inputs["greeting_tts_entity"]["default"], "")
+        self.assertEqual(inputs["greeting_speaker_entity"]["default"], "")
+        for name in ("allowed_users", "voice_greetings", "fingerprint_entity", "nfc_entity"):
             self.assertEqual(inputs[name]["default"], [])
         self.assertEqual(BLUEPRINT["mode"], "single")
         self.assertEqual(BLUEPRINT["max_exceeded"], "silent")
