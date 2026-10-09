@@ -349,9 +349,67 @@ class BlueprintSecurityTests(unittest.TestCase):
         self.assertEqual(run.count("notify.send_message"), 0)
         self.assertEqual(run.count("logbook.log"), 0)
 
+    def test_personal_voice_greeting_only_on_authorized_success(self):
+        people = [{"name": "Thomas", "ulp_id": "USER-A",
+                   "voice_message": "Velkommen hjem, Thomas!"},
+                  {"name": "Andrea", "ulp_id": "USER-B",
+                   "voice_message": "Velkommen hjem, Andrea!"}]
+        settings = {
+            "allowed_users": people,
+            "greeting_tts_entity": "tts.piper",
+            "greeting_speaker_entity": "media_player.kitchen",
+            "cooldown_seconds": 0,
+        }
+        for method in ("fingerprint", "nfc"):
+            with self.subTest(method=method):
+                run = self.assertUnlock(Run(event=trigger(method), **settings))
+                self.assertEqual(run.count("tts.speak"), 1)
+                spoken = [data for action, data in run.calls if action == "tts.speak"]
+                self.assertEqual(spoken[0]["message"], "Velkommen hjem, Thomas!")
+                self.assertEqual(spoken[0]["media_player_entity_id"], "media_player.kitchen")
+                self.assertEqual(run.count("test.success"), 1)
+
+        for method in ("fingerprint", "nfc"):
+            with self.subTest(method=method, case="denied"):
+                run = self.assertNoUnlock(Run(
+                    event=trigger(method),
+                    response={"users": [user(user_status="INACTIVE")]},
+                    **settings,
+                ))
+                self.assertEqual(run.count("tts.speak"), 0)
+
+    def test_voice_opt_in_and_ulp_id_matching(self):
+        person = [{"name": "Thomas", "ulp_id": "USER-A",
+                   "voice_message": "Hei Thomas!"}]
+        for input_change in (
+            {},
+            {"greeting_tts_entity": "tts.piper"},
+            {"greeting_speaker_entity": "media_player.kitchen"},
+            {"greeting_tts_entity": "tts.piper", "greeting_speaker_entity": "media_player.kitchen",
+             "allowed_users": [{"name": "Thomas", "ulp_id": "USER-A"}]},
+            {"greeting_tts_entity": "tts.piper", "greeting_speaker_entity": "media_player.kitchen",
+             "allowed_users": [{"name": "Other", "ulp_id": "USER-B", "voice_message": "Hello!"}],
+             "access_policy": "any_active_user"},
+        ):
+            with self.subTest(inputs=input_change):
+                run = self.assertUnlock(Run(**{
+                    "access_policy": "any_active_user", "allowed_users": person,
+                    **input_change,
+                }))
+                self.assertEqual(run.count("tts.speak"), 0)
+
+        run = self.assertUnlock(Run(
+            access_policy="any_active_user", allowed_users=person,
+            greeting_tts_entity="tts.piper",
+            greeting_speaker_entity="media_player.kitchen",
+        ))
+        self.assertEqual(run.count("tts.speak"), 1)
+
     def test_defaults_and_single_mode_preserved(self):
         inputs = BLUEPRINT["blueprint"]["input"]
         self.assertEqual(inputs["access_policy"]["default"], "specific_users")
+        self.assertEqual(inputs["greeting_tts_entity"]["default"], "")
+        self.assertEqual(inputs["greeting_speaker_entity"]["default"], "")
         for name in ("allowed_users", "fingerprint_entity", "nfc_entity"):
             self.assertEqual(inputs[name]["default"], [])
         self.assertEqual(BLUEPRINT["mode"], "single")
