@@ -1,3 +1,24 @@
+# v0.4 — Optional per-person voice greetings (unreleased)
+
+## Changes
+
+- Optional `Voice greeting` text field for each entry in **Allowed users**, matched strictly by the validated UniFi `ulp_id`. Works with both fingerprint and NFC.
+- Optional TTS and media-player inputs; voice only runs when both are configured and the matched person's greeting is nonempty.
+- Voice is fired only in the authorized success path after `lock.unlock`; rejected and unrecognized credentials stay silent.
+- An error during `tts.speak` is non-fatal and cannot prevent existing success actions. Existing users without greetings remain silent.
+- Fixed blueprint source/import links to the current repository path.
+- Security tests extended to check voice on successful credential methods, no-voice defaults, per-user matching, denied attempts, and Any ACTIVE policy behavior.
+
+## Upgrade
+
+Re-import the blueprint in Home Assistant, reload/review the automation, and optionally add greetings to the **Allowed users** entries. Set the TTS entity and speaker. No voice is spoken with the default inputs. This release does not change allowlist, keyring, credential, freshness, or lock security checks.
+
+## Verification
+
+Run `python -m unittest discover -s tests -v` with `tests/requirements.txt` installed and verify your chosen TTS engine/speaker and real doorbell/lock behavior in Home Assistant. Mocked tests do not validate physical playback.
+
+---
+
 # v0.3 — Event freshness and fingerprint enrollment checks
 
 Released 2026-10-02. All 18 local mocked regression tests passed; live Home Assistant and physical reader/lock verification is still pending.
