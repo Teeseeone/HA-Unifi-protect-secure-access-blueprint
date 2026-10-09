@@ -2,15 +2,15 @@
 
 A Home Assistant automation blueprint for unlocking a smart lock using registered fingerprints and NFC cards from compatible UniFi Protect doorbells.
 
-[![Import Blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FTeeseeone%2Funifi-protect-secure-access-blueprint%2Fblob%2Fmain%2Funifi_protect_secure_access_unlock.yaml)
+[![Import Blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FTeeseeone%2FHA-Unifi-protect-secure-access-blueprint%2Fblob%2Fmain%2Funifi_protect_secure_access_unlock.yaml)
 
 ## What's new in v0.4
 
-- **Optional personalized voice greeting per person:** add a `Voice greeting` to an entry in **Allowed users**. The matching is by UniFi `ulp_id`, and a person can use either fingerprint or NFC.
+- **Voice greetings per person:** a separate, optional section in the automation editor contains **Per-person greetings**, the TTS entity, and the speaker. Add each person's UniFi `ulp_id` and greeting here, independently of **Allowed users**. Both fingerprint and NFC match the uniquely validated keyring user's ULP ID.
 - Choose a **Voice greeting TTS entity** (`tts.*`) and **Voice greeting speaker** (`media_player.*`). All three values are required; otherwise no speech occurs.
 - Greetings play only after a successfully authorized `lock.unlock` action; denied, stale, ignored, or failed-keyring attempts never speak. A TTS failure is noncritical (`continue_on_error`) and does not interfere with the success actions.
-- In **Any ACTIVE registered UniFi Protect user** mode, you can still list people in **Allowed users** to personalize their greetings. Entries do **not** restrict the Any ACTIVE access policy.
-- Existing entries without a greeting remain silent; previously configured inputs and authorization defaults are preserved.
+- In **Any ACTIVE registered UniFi Protect user** mode, leave **Allowed users** empty and configure greetings in the separate section. Greeting entries never grant access or change the access policy.
+- The greeting list defaults to empty and both playback selectors default to blank. Previously configured authorization inputs and defaults are preserved.
 
 ### Example per-person greetings
 
@@ -19,7 +19,22 @@ A Home Assistant automation blueprint for unlocking a smart lock using registere
 | Thomas | Person's ULP ID from Protect | Velkommen hjem, Thomas! |
 | Andrea | Person's ULP ID from Protect | Hei Andrea, velkommen hjem! |
 
-In the automation editor, expand **Allowed users**, enter each person's `name`, `ulp_id`, and optional **Voice greeting**, then choose the TTS entity and speaker. For example, use `tts.piper` or another available TTS entity together with your kitchen speaker. Leave any greeting empty to keep that person silent.
+In the automation editor, expand **Voice greetings per person**, click **Add** under **Per-person greetings**, and enter each person's `name`, `ulp_id`, and optional **Voice greeting**. Choose the TTS entity and speaker in the same section. For example, use `tts.piper` or another available TTS entity together with your kitchen speaker. Leave any greeting empty to keep that person silent.
+
+The name in a greeting entry is only an editor label; it does not change notification names or identify the person at runtime. Use one greeting entry per ULP ID. Empty/whitespace-only text, missing messages, unmatched IDs, and duplicate entries for the validated ID stay silent. **Allowed users** still contains only access names and ULP IDs. Under **Specific allowlisted users**, add the person there as well to grant access; adding them only to greetings cannot authorize them.
+
+For YAML automation configuration, section inputs keep their flat names, as described in the [Home Assistant blueprint schema](https://www.home-assistant.io/docs/blueprint/schema/#blueprint-input-sections). For example, these values go under `use_blueprint.input` (replace the sample ID and entities):
+
+```yaml
+access_policy: any_active_user
+allowed_users: []
+voice_greetings:
+  - name: Thomas
+    ulp_id: d23e27e0-a32a-41e5-9424-be646330c2d5
+    voice_message: "Velkommen hjem, Thomas!"
+greeting_tts_entity: tts.piper
+greeting_speaker_entity: media_player.kitchen
+```
 
 The message is spoken literally, without dynamically evaluating template code entered in the text field. To avoid speaking people's names aloud, simply leave their greeting empty.
 
@@ -60,7 +75,7 @@ See the official [UniFi Protect integration documentation](https://www.home-assi
 5. Choose the **Access policy**:
    - **Specific allowlisted users** (default): only ACTIVE registered users whose ULP IDs appear in **Allowed users** can unlock. An empty allowlist denies everyone.
    - **Any ACTIVE registered UniFi Protect user**: every ACTIVE user meeting the fingerprint or NFC checks below can unlock. The allowlist does not restrict access in this mode, including for users/credentials added later.
-6. Optionally add a **Voice greeting** for each person in **Allowed users** and choose a **Voice greeting TTS entity** and **Voice greeting speaker**. Leave either selector blank to disable all voice greetings.
+6. Optionally expand **Voice greetings per person**, add people under **Per-person greetings**, and choose a **Voice greeting TTS entity** and **Voice greeting speaker**. Leave either selector blank or the greeting list empty to disable all voice greetings.
 7. Optionally configure notifications, Activity logging, cooldown, and custom actions.
 
 ## View users, ACTIVE status and registered credentials
@@ -120,7 +135,9 @@ Custom actions can use `access_name`, `access_method`, `access_ulp_id`, `scanned
 
 ## Updating an existing automation
 
-Re-import the blueprint, reload automations, and review/save each automation. Existing policies and allowlists remain in effect; **Specific allowlisted users** remains the default for new automations. v0.4 adds two optional inputs and a per-person optional greeting field, all disabled by default, without changing authorization. To use voice, re-open and save each person's **Allowed users** entry with their optional greeting, then select TTS and speaker. If upgrading from an older single-reader version, existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists.
+Re-import the blueprint, reload automations, and review/save each automation. Existing policies and allowlists remain in effect; **Specific allowlisted users** remains the default for new automations. v0.4 adds an optional greeting list, TTS entity, and speaker in **Voice greetings per person**, all disabled by default, without changing authorization. To use voice, add entries to **Per-person greetings**, then select TTS and speaker. If upgrading from an older single-reader version, existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists.
+
+If you tested the earlier v0.4 draft that stored `voice_message` inside `allowed_users`, copy each greeting's name, ULP ID, and message into **Per-person greetings** (`voice_greetings` in YAML). Remove the old `voice_message` field from `allowed_users`; keep its access entries and policy as intended. Old allowlist greeting fields are no longer read for speech. The `greeting_tts_entity` and `greeting_speaker_entity` input names are unchanged, so existing selections are retained.
 
 The 10-second limit is fixed. Events that expire while Home Assistant or the keyring action is busy no longer unlock; inspect the automation trace if a legitimate attempt is ignored. Keep Home Assistant's system clock correct.
 
@@ -140,7 +157,7 @@ Before relying on the automation, test both credential methods you enable, ACTIV
 
 From the repository root, install the test dependencies with `python -m pip install -r tests/requirements.txt`, then run `python -m unittest discover -s tests -v`.
 
-The tests parse the actual blueprint YAML and evaluate its Jinja templates with mocked state, clock, keyring response, and action execution. They cover freshness boundaries, lookup delays, fingerprint enrollment removal, NFC authorization, policy denials, reconnect guards, keyring failures, and optional per-person TTS gating. They do not replace validation in a running Home Assistant instance or physical reader/lock testing.
+All 28 local regression tests pass. The tests parse the actual blueprint YAML and evaluate its Jinja templates with mocked state, clock, keyring response, and action execution. They cover freshness boundaries, lookup delays, fingerprint enrollment removal, NFC authorization, policy denials, reconnect guards, keyring failures, independent greeting/allowlist configuration, validated-ID matching, duplicate/empty greetings, literal text, no speech on rejected attempts or unlock failure, and noncritical TTS errors. They also check section defaults, input references, and compile every template. They do not replace validation in a running Home Assistant instance or physical reader/lock testing.
 
 ## Credits and license
 

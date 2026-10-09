@@ -2,7 +2,9 @@
 
 ## Changes
 
-- Optional `Voice greeting` text field for each entry in **Allowed users**, matched strictly by the validated UniFi `ulp_id`. Works with both fingerprint and NFC.
+- Separate **Voice greetings per person** editor section with a **Per-person greetings** list, TTS entity, and speaker. **Allowed users** is exclusively for access names and ULP IDs.
+- Greetings match strictly by the uniquely validated UniFi `ulp_id` and work with both fingerprint and NFC. Greeting names are editor labels and do not change notification names. Missing/empty messages, unmatched IDs, and duplicate matching entries stay silent.
+- Works in Any ACTIVE mode with an empty allowlist; greeting entries cannot grant access in Specific allowlisted users mode.
 - Optional TTS and media-player inputs; voice only runs when both are configured and the matched person's greeting is nonempty.
 - Voice is fired only in the authorized success path after `lock.unlock`; rejected and unrecognized credentials stay silent.
 - An error during `tts.speak` is non-fatal and cannot prevent existing success actions. Existing users without greetings remain silent.
@@ -11,11 +13,15 @@
 
 ## Upgrade
 
-Re-import the blueprint in Home Assistant, reload/review the automation, and optionally add greetings to the **Allowed users** entries. Set the TTS entity and speaker. No voice is spoken with the default inputs. This release does not change allowlist, keyring, credential, freshness, or lock security checks.
+Re-import the blueprint in Home Assistant, reload/review the automation, and optionally expand **Voice greetings per person** to add entries under **Per-person greetings**. Set the TTS entity and speaker in that section. No voice is spoken with the default inputs. This release does not change allowlist, keyring, credential, freshness, or lock security checks.
+
+If you tried the earlier v0.4 draft, copy the greetings from `allowed_users[].voice_message` into `voice_greetings` entries (name, ULP ID, and message). Remove the old greeting fields from Allowed users while retaining intended access entries. Old allowlist greeting fields are ignored for speech. Existing TTS/speaker input names and selections are preserved.
 
 ## Verification
 
-Run `python -m unittest discover -s tests -v` with `tests/requirements.txt` installed and verify your chosen TTS engine/speaker and real doorbell/lock behavior in Home Assistant. Mocked tests do not validate physical playback.
+All 28 local mocked regression tests pass, including section/input-reference checks and compilation of every template. Coverage includes independent greeting configuration, Any ACTIVE with an empty allowlist, greetings unable to authorize access, keyring-owner NFC matching, silent rejection paths, and continued success actions/notifications/cooldown after a TTS error.
+
+Run `python -m unittest discover -s tests -v` with `tests/requirements.txt` installed and verify your chosen TTS engine/speaker and real doorbell/lock behavior in Home Assistant. Live Home Assistant import/editor and physical playback/lock testing have not been performed here.
 
 ---
 

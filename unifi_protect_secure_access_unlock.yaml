@@ -6,8 +6,9 @@
 blueprint:
   name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.4
   description: |
-    v0.4: Optional per-person voice greetings using a selected TTS entity
-    and speaker after successful unlock. Voice is disabled by default and
+    v0.4: A separate Voice greetings per person section configures optional
+    speech using a selected TTS entity and speaker after successful unlock.
+    Greeting entries never grant access. Voice is disabled by default and
     never runs for denied access. Unlock using optional/multiple fingerprint and NFC event entities
     from one UniFi Protect instance. Specific allowlisted users is the default;
     an empty allowlist denies access. Any ACTIVE registered user is optional.
@@ -130,9 +131,8 @@ blueprint:
         Get user keyring info in Home Assistant Actions (see the steps above).
         Copy ulp_id, not nfc_id or fingerprint_id.
         The same permission applies to that user's registered fingerprints
-        and registered NFC cards. Voice greeting is optional per person,
-        including when Any ACTIVE registered user is selected; entries here
-        only restrict access in Specific allowlisted users mode.
+        and registered NFC cards. Configure speech separately under
+        Voice greetings per person; greeting entries never grant access.
       default: []
       selector:
         object:
@@ -150,35 +150,67 @@ blueprint:
               required: true
               selector:
                 text: {}
-            voice_message:
-              label: Voice greeting (optional)
-              required: false
-              selector:
-                text:
-                  multiline: true
-
-    greeting_tts_entity:
-      name: Voice greeting TTS entity (optional)
+    voice_greetings_section:
+      name: Voice greetings per person
       description: >
-        Select a tts.* entity for spoken greetings. A greeting plays only
-        when this and a speaker are selected and the authorized user's
-        Allowed users entry has a non-empty Voice greeting.
-      default: ""
-      selector:
-        entity:
-          filter:
-            - domain: tts
+        Optional speech after authorized unlock, independent of Allowed users.
+        Works with either access policy, including Any ACTIVE with an empty
+        allowlist. These entries cannot grant access or change notification names.
+      collapsed: true
+      input:
+        voice_greetings:
+          name: Per-person greetings
+          description: >
+            Add a friendly name, the person's UniFi ulp_id from Get user keyring
+            info, and a voice greeting. Name is only an editor label; matching
+            uses the validated ULP ID, never a name, nfc_id or fingerprint_id.
+            Use one entry per ULP ID. Duplicate IDs or empty greetings stay silent.
+          default: []
+          selector:
+            object:
+              multiple: true
+              label_field: name
+              description_field: ulp_id
+              fields:
+                name:
+                  label: Name
+                  required: true
+                  selector:
+                    text: {}
+                ulp_id:
+                  label: UniFi ULP ID
+                  required: true
+                  selector:
+                    text: {}
+                voice_message:
+                  label: Voice greeting (optional)
+                  required: false
+                  selector:
+                    text:
+                      multiline: true
 
-    greeting_speaker_entity:
-      name: Voice greeting speaker (optional)
-      description: >
-        Select a media player for voice greetings. Leave empty to disable
-        voice without changing any access or notification behavior.
-      default: ""
-      selector:
-        entity:
-          filter:
-            - domain: media_player
+        greeting_tts_entity:
+          name: Voice greeting TTS entity (optional)
+          description: >
+            Select a tts.* entity for spoken greetings. A greeting plays only
+            when this and a speaker are selected and the authorized user's
+            Per-person greetings entry has a non-empty Voice greeting.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: tts
+
+        greeting_speaker_entity:
+          name: Voice greeting speaker (optional)
+          description: >
+            Select a media player for voice greetings. Leave empty to disable
+            voice without changing any access or notification behavior.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: media_player
 
     notify_entities:
       name: Notification targets
@@ -282,6 +314,7 @@ actions:
   - variables:
       policy: !input access_policy
       allowed_users_config: !input allowed_users
+      voice_greetings_config: !input voice_greetings
       notify_targets: !input notify_entities
       do_notify_success: !input notify_on_success
       do_notify_denied: !input notify_on_denied
@@ -425,9 +458,10 @@ actions:
   # This does not participate in authorization and cannot grant access.
   - variables:
       access_voice_message: >-
-        {% set matches = allowed_users_config
+        {% set matches = voice_greetings_config | select('mapping')
+          | selectattr('ulp_id', 'defined')
           | selectattr('ulp_id', 'equalto', access_ulp_id) | list %}
-        {% if matches | count > 0 %}
+        {% if access_ulp_id not in ['', none] and matches | count == 1 %}
           {{ (matches[0].get('voice_message') or '') | trim }}
         {% else %}
           {{ '' }}
