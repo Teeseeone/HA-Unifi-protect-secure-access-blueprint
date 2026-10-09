@@ -4,9 +4,11 @@
 # Modifications Copyright (c) 2026 Teeseeone.
 
 blueprint:
-  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.3
+  name: UniFi Protect Doorbell - Secure Fingerprint & NFC Unlock v0.4
   description: |
-    v0.3: Unlock using optional/multiple fingerprint and NFC event entities
+    v0.4: Optional per-person voice greetings using a selected TTS entity
+    and speaker after successful unlock. Voice is disabled by default and
+    never runs for denied access. Unlock using optional/multiple fingerprint and NFC event entities
     from one UniFi Protect instance. Specific allowlisted users is the default;
     an empty allowlist denies access. Any ACTIVE registered user is optional.
     Both methods require an event-entity timestamp between 0 and 10 seconds
@@ -55,7 +57,7 @@ blueprint:
     select a device before performing the action.
   domain: automation
   author: Teeseeone (based on the original epiech blueprint)
-  source_url: https://github.com/Teeseeone/unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml
+  source_url: https://github.com/Teeseeone/HA-Unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml
   homeassistant:
     min_version: 2025.1.0
 
@@ -128,7 +130,9 @@ blueprint:
         Get user keyring info in Home Assistant Actions (see the steps above).
         Copy ulp_id, not nfc_id or fingerprint_id.
         The same permission applies to that user's registered fingerprints
-        and registered NFC cards.
+        and registered NFC cards. Voice greeting is optional per person,
+        including when Any ACTIVE registered user is selected; entries here
+        only restrict access in Specific allowlisted users mode.
       default: []
       selector:
         object:
@@ -146,6 +150,35 @@ blueprint:
               required: true
               selector:
                 text: {}
+            voice_message:
+              label: Voice greeting (optional)
+              required: false
+              selector:
+                text:
+                  multiline: true
+
+    greeting_tts_entity:
+      name: Voice greeting TTS entity (optional)
+      description: >
+        Select a tts.* entity for spoken greetings. A greeting plays only
+        when this and a speaker are selected and the authorized user's
+        Allowed users entry has a non-empty Voice greeting.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: tts
+
+    greeting_speaker_entity:
+      name: Voice greeting speaker (optional)
+      description: >
+        Select a media player for voice greetings. Leave empty to disable
+        voice without changing any access or notification behavior.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: media_player
 
     notify_entities:
       name: Notification targets
@@ -254,6 +287,8 @@ actions:
       do_notify_denied: !input notify_on_denied
       do_activity_logging: !input activity_logging
       cooldown: !input cooldown_seconds
+      greeting_tts_entity: !input greeting_tts_entity
+      greeting_speaker_entity: !input greeting_speaker_entity
 
       access_method: >-
         {% if trigger.id == 'fingerprint' %}
@@ -386,6 +421,18 @@ actions:
           Access policy did not authorize this user
         {% endif %}
 
+  # Select a greeting by validated ULP ID, never by a display name or NFC ID.
+  # This does not participate in authorization and cannot grant access.
+  - variables:
+      access_voice_message: >-
+        {% set matches = allowed_users_config
+          | selectattr('ulp_id', 'equalto', access_ulp_id) | list %}
+        {% if matches | count > 0 %}
+          {{ (matches[0].get('voice_message') or '') | trim }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+
   - choose:
       - conditions:
           - condition: template
@@ -431,6 +478,24 @@ actions:
                             title: "🔓 Door unlocked"
                             message: >-
                               {{ access_name }} unlocked the door using {{ access_method }}.
+
+          # Voice is optional and non-critical. A TTS error must not block
+          # custom success actions or affect the already-authorized unlock.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ greeting_tts_entity not in ['', none]
+                         and greeting_speaker_entity not in ['', none]
+                         and (access_voice_message | trim | length > 0) }}
+                sequence:
+                  - action: tts.speak
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ greeting_tts_entity }}"
+                    data:
+                      media_player_entity_id: "{{ greeting_speaker_entity }}"
+                      message: "{{ access_voice_message }}"
 
           - choose: []
             default: !input success_actions
