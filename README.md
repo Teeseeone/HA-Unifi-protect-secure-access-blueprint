@@ -1,8 +1,27 @@
-# UniFi Protect Secure Access Blueprint v0.3
+# UniFi Protect Secure Access Blueprint v0.4
 
 A Home Assistant automation blueprint for unlocking a smart lock using registered fingerprints and NFC cards from compatible UniFi Protect doorbells.
 
 [![Import Blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FTeeseeone%2Funifi-protect-secure-access-blueprint%2Fblob%2Fmain%2Funifi_protect_secure_access_unlock.yaml)
+
+## What's new in v0.4
+
+- **Optional personalized voice greeting per person:** add a `Voice greeting` to an entry in **Allowed users**. The matching is by UniFi `ulp_id`, and a person can use either fingerprint or NFC.
+- Choose a **Voice greeting TTS entity** (`tts.*`) and **Voice greeting speaker** (`media_player.*`). All three values are required; otherwise no speech occurs.
+- Greetings play only after a successfully authorized `lock.unlock` action; denied, stale, ignored, or failed-keyring attempts never speak. A TTS failure is noncritical (`continue_on_error`) and does not interfere with the success actions.
+- In **Any ACTIVE registered UniFi Protect user** mode, you can still list people in **Allowed users** to personalize their greetings. Entries do **not** restrict the Any ACTIVE access policy.
+- Existing entries without a greeting remain silent; previously configured inputs and authorization defaults are preserved.
+
+### Example per-person greetings
+
+| Name | UniFi ULP ID | Voice greeting |
+| --- | --- | --- |
+| Thomas | Person's ULP ID from Protect | Velkommen hjem, Thomas! |
+| Andrea | Person's ULP ID from Protect | Hei Andrea, velkommen hjem! |
+
+In the automation editor, expand **Allowed users**, enter each person's `name`, `ulp_id`, and optional **Voice greeting**, then choose the TTS entity and speaker. For example, use `tts.piper` or another available TTS entity together with your kitchen speaker. Leave any greeting empty to keep that person silent.
+
+The message is spoken literally, without dynamically evaluating template code entered in the text field. To avoid speaking people's names aloud, simply leave their greeting empty.
 
 ## What changed in v0.3
 
@@ -11,7 +30,7 @@ A Home Assistant automation blueprint for unlocking a smart lock using registere
 - Fingerprint authorization now also requires at least one `key_type: fingerprint` key for the uniquely matched ACTIVE user in the returned keyring. Removing all that user's fingerprints denies subsequent fingerprint attempts once the integration reflects the removal.
 - **Specific allowlisted users** remains the default; an empty allowlist denies everyone. NFC validation, ACTIVE-user checks, ambiguity rejection, reconnect/restoration guards, logging, notifications, custom actions, and cooldown are retained.
 
-See [v0.3 release notes](RELEASE_NOTES.md) for upgrade and verification details.
+See [release notes](RELEASE_NOTES.md) for upgrade and verification details.
 
 ## Features retained from v0.2
 
@@ -34,14 +53,15 @@ See the official [UniFi Protect integration documentation](https://www.home-assi
 ## Install and configure
 
 1. Use the import button above, or import this URL from **Settings → Automations & scenes → Blueprints**:
-   `https://github.com/Teeseeone/unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml`
+   `https://github.com/Teeseeone/HA-Unifi-protect-secure-access-blueprint/blob/main/unifi_protect_secure_access_unlock.yaml`
 2. Create an automation and select a **UniFi Protect device** from the correct instance.
 3. Select the optional **Fingerprint event entities** and **NFC event entities**.
 4. Select the **Smart lock**.
 5. Choose the **Access policy**:
    - **Specific allowlisted users** (default): only ACTIVE registered users whose ULP IDs appear in **Allowed users** can unlock. An empty allowlist denies everyone.
    - **Any ACTIVE registered UniFi Protect user**: every ACTIVE user meeting the fingerprint or NFC checks below can unlock. The allowlist does not restrict access in this mode, including for users/credentials added later.
-6. Optionally configure notifications, Activity logging, cooldown, and custom actions.
+6. Optionally add a **Voice greeting** for each person in **Allowed users** and choose a **Voice greeting TTS entity** and **Voice greeting speaker**. Leave either selector blank to disable all voice greetings.
+7. Optionally configure notifications, Activity logging, cooldown, and custom actions.
 
 ## View users, ACTIVE status and registered credentials
 
@@ -100,7 +120,7 @@ Custom actions can use `access_name`, `access_method`, `access_ulp_id`, `scanned
 
 ## Updating an existing automation
 
-Re-import the blueprint, reload automations, and review/save each automation. No input keys or defaults change from v0.2. Existing policies and allowlists remain in effect; **Specific allowlisted users** remains the default for new automations. If upgrading from an older single-reader version, existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists.
+Re-import the blueprint, reload automations, and review/save each automation. Existing policies and allowlists remain in effect; **Specific allowlisted users** remains the default for new automations. v0.4 adds two optional inputs and a per-person optional greeting field, all disabled by default, without changing authorization. To use voice, re-open and save each person's **Allowed users** entry with their optional greeting, then select TTS and speaker. If upgrading from an older single-reader version, existing single-entity values remain valid for the state triggers; reselect them in the editor to save as lists.
 
 The 10-second limit is fixed. Events that expire while Home Assistant or the keyring action is busy no longer unlock; inspect the automation trace if a legitimate attempt is ignored. Keep Home Assistant's system clock correct.
 
@@ -120,7 +140,7 @@ Before relying on the automation, test both credential methods you enable, ACTIV
 
 From the repository root, install the test dependencies with `python -m pip install -r tests/requirements.txt`, then run `python -m unittest discover -s tests -v`.
 
-The tests parse the actual blueprint YAML and evaluate its Jinja templates with mocked state, clock, keyring response, and action execution. They cover freshness boundaries, lookup delays, fingerprint enrollment removal, NFC authorization, policy denials, reconnect guards, and keyring failures. They do not replace validation in a running Home Assistant instance or physical reader/lock testing.
+The tests parse the actual blueprint YAML and evaluate its Jinja templates with mocked state, clock, keyring response, and action execution. They cover freshness boundaries, lookup delays, fingerprint enrollment removal, NFC authorization, policy denials, reconnect guards, keyring failures, and optional per-person TTS gating. They do not replace validation in a running Home Assistant instance or physical reader/lock testing.
 
 ## Credits and license
 
